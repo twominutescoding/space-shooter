@@ -11,23 +11,21 @@
 
   body {
     background: #000;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
+    width: 100vw;
     height: 100vh;
     overflow: hidden;
+    position: relative;
     font-family: 'Share Tech Mono', monospace;
     color: #00ffcc;
   }
 
   #gameWrapper {
-    position: relative;
+    position: absolute;
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 10px;
-    transform-origin: center center;
+    transform-origin: top left;
   }
 
   #title {
@@ -60,7 +58,7 @@
   }
 
   #overlay {
-    position: absolute;
+    position: fixed;
     top: 0; left: 0; right: 0; bottom: 0;
     display: flex;
     flex-direction: column;
@@ -963,13 +961,19 @@ canvas.addEventListener('mousedown', e => {
 canvas.addEventListener('mouseup', () => { keys[' '] = false; });
 
 // --- Responsive scaling ---
+// Natural game dimensions: canvas 480×560 + title ~38px + hud ~16px + 2×gap 10px
+const NATURAL_W = 480, NATURAL_H = 634;
+
 function scaleGame() {
   const wrapper = document.getElementById('gameWrapper');
-  wrapper.style.transform = '';
-  const rect = wrapper.getBoundingClientRect();
-  const scaleX = (window.innerWidth  * 0.96) / rect.width;
-  const scaleY = (window.innerHeight * 0.96) / rect.height;
-  const scale  = Math.min(scaleX, scaleY, 2.0); // cap at 2× on large screens
+  const scaleX  = (window.innerWidth  * 0.96) / NATURAL_W;
+  const scaleY  = (window.innerHeight * 0.96) / NATURAL_H;
+  const scale   = Math.min(scaleX, scaleY, 2.0);
+  // Position top-left corner so the scaled block is centered in the viewport
+  const left    = (window.innerWidth  - NATURAL_W * scale) / 2;
+  const top     = (window.innerHeight - NATURAL_H * scale) / 2;
+  wrapper.style.left      = left + 'px';
+  wrapper.style.top       = top  + 'px';
   wrapper.style.transform = `scale(${scale})`;
 }
 window.addEventListener('resize', scaleGame);
