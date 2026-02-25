@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>VOID STRIKER</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap');
@@ -14,13 +14,13 @@
     width: 100vw;
     height: 100vh;
     overflow: hidden;
-    position: relative;
     font-family: 'Share Tech Mono', monospace;
     color: #00ffcc;
   }
 
   #gameWrapper {
-    position: absolute;
+    position: fixed;      /* fixed = always relative to the visual viewport */
+    top: 0; left: 0;     /* JS overrides these via style.top/left */
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -118,7 +118,9 @@ const ctx = canvas.getContext('2d');
 const W = canvas.width, H = canvas.height;
 
 // --- State ---
-let state = 'menu'; // menu | playing | dead | win
+let state = 'menu'; // menu | shipSelect | playing | dead | win
+let selectedShip = 0;    // 0=Viper  1=Titan  2=Phantom
+let shipSelectFlash = -9; // timestamp (t) of last ship change, for flash effect
 let score = 0, lives = 3, wave = 1;
 let keys = {};
 let bullets = [], enemyBullets = [], particles = [], stars = [], pickups = [];
@@ -133,6 +135,13 @@ let touchX = null, touchStartClientX = null, touchStartPlayerX = null;
 
 // Mouse
 let mouseX = null;
+
+// --- Ship definitions ---
+const SHIPS = [
+  { name: 'VIPER',   sub: 'BALANCED',  color: '#00ffcc', rgb: '0,255,204',   speed: 4.5, cooldown: 12, lives: 3, invincible: 120, stats: [0.69, 0.67, 0.75] },
+  { name: 'TITAN',   sub: 'HEAVY',     color: '#ff6600', rgb: '255,102,0',   speed: 3.2, cooldown: 16, lives: 4, invincible: 100, stats: [0.49, 0.50, 1.00] },
+  { name: 'PHANTOM', sub: 'STEALTH',   color: '#cc44ff', rgb: '204,68,255',  speed: 6.5, cooldown:  8, lives: 2, invincible: 150, stats: [1.00, 1.00, 0.50] },
+]; // stats: [speed%, fireRate%, armor%]
 
 // --- Nebula background ---
 const NEBULAE = [
@@ -166,7 +175,8 @@ function initStars() {
 
 // --- Player ---
 function createPlayer() {
-  return { x: W/2, y: H - 55, w: 28, h: 32, speed: 4.5, invincible: 0 };
+  const ship = SHIPS[selectedShip];
+  return { x: W/2, y: H - 55, w: 28, h: 32, speed: ship.speed, invincible: 0 };
 }
 
 // --- Enemy grid ---
@@ -219,7 +229,7 @@ function createBoss(w) {
 }
 
 function startGame() {
-  score = 0; lives = 3; wave = 1;
+  score = 0; lives = SHIPS[selectedShip].lives; wave = 1;
   player = createPlayer();
   bullets = []; particles = []; explosions = []; pickups = [];
   activeWeapon = null; weaponTimer = 0; boss = null;
@@ -232,8 +242,11 @@ function startGame() {
 function updateHUD() {
   document.getElementById('scoreDisplay').textContent = score;
   document.getElementById('waveDisplay').textContent = wave;
-  const hearts = ['♦','♦','♦'].map((h,i) => i < lives ? '♦' : '◇').join('');
-  document.getElementById('livesDisplay').textContent = hearts;
+  const ship = SHIPS[selectedShip];
+  const hearts = Array.from({ length: ship.lives }, (_, i) => i < lives ? '♦' : '◇').join('');
+  const livesEl = document.getElementById('livesDisplay');
+  livesEl.textContent = hearts;
+  livesEl.style.color = ship.color;
 }
 
 function hideOverlay() {
@@ -243,7 +256,297 @@ function showOverlay(msg, sub) {
   document.getElementById('overlay').style.display = 'flex';
   document.getElementById('message').textContent = msg;
   document.getElementById('sub').textContent = sub;
-  document.getElementById('controls').textContent = 'PRESS SPACE OR TAP TO RESTART';
+  document.getElementById('controls').textContent = 'PRESS SPACE OR TAP TO CONTINUE';
+}
+
+// --- Ship Select ---
+function enterShipSelect() {
+  state = 'shipSelect';
+  hideOverlay();
+}
+
+function getCardBounds(i) {
+  const cardW = 128, cardH = 215, gap = 8;
+  const startX = (W - (3 * cardW + 2 * gap)) / 2;
+  return { x: startX + i * (cardW + gap), y: 80, w: cardW, h: cardH };
+}
+
+function drawShipPreview(idx, cx, cy, color, sel) {
+  const fl = sel ? (0.7 + Math.sin(t * 28) * 0.3) : 0;
+
+  // Engine flames (only when selected, each ship different)
+  if (sel) {
+    if (idx === 1) {
+      // TITAN: twin engines
+      for (const ex of [cx - 13, cx + 13]) {
+        ctx.shadowBlur = 10; ctx.shadowColor = '#ff3300'; ctx.fillStyle = '#ff3300';
+        ctx.beginPath(); ctx.ellipse(ex, cy + 34, 5 * fl, 10 * fl, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowColor = '#ffff99'; ctx.fillStyle = '#ffff99';
+        ctx.beginPath(); ctx.ellipse(ex, cy + 31, 1.5, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+      }
+    } else if (idx === 2) {
+      // PHANTOM: wide flat exhaust
+      const fl2 = 0.8 + Math.cos(t * 22) * 0.2;
+      ctx.shadowBlur = 12; ctx.shadowColor = color; ctx.fillStyle = color + '55';
+      ctx.beginPath(); ctx.ellipse(cx, cy + 28, 16 * fl2, 5 * fl, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowColor = '#ffffff88'; ctx.fillStyle = '#ffffff33';
+      ctx.beginPath(); ctx.ellipse(cx, cy + 27, 9 * fl2, 2, 0, 0, Math.PI * 2); ctx.fill();
+    } else {
+      // VIPER: single centered flame
+      ctx.shadowBlur = 12; ctx.shadowColor = '#ff3300'; ctx.fillStyle = '#ff3300';
+      ctx.beginPath(); ctx.ellipse(cx, cy + 35, 7 * fl, 12 * fl, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowColor = '#ff8800'; ctx.fillStyle = '#ff8800';
+      ctx.beginPath(); ctx.ellipse(cx, cy + 32, 4 * fl, 8 * fl, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowColor = '#ffff99'; ctx.fillStyle = '#ffff99';
+      ctx.beginPath(); ctx.ellipse(cx, cy + 30, 2, 4.5, 0, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  ctx.shadowBlur  = sel ? 16 : 8;
+  ctx.shadowColor = color;
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = 1.5;
+
+  if (idx === 0) {
+    // VIPER: slim classic triangle (1.5× scale)
+    ctx.fillStyle = '#001a14';
+    ctx.beginPath();
+    ctx.moveTo(cx,      cy - 24);
+    ctx.lineTo(cx + 18, cy + 21);
+    ctx.lineTo(cx + 7,  cy + 12);
+    ctx.lineTo(cx - 7,  cy + 12);
+    ctx.lineTo(cx - 18, cy + 21);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    // Cockpit window
+    ctx.fillStyle = color + '55'; ctx.shadowBlur = 4;
+    ctx.fillRect(cx - 3.5, cy - 19, 7, 12);
+    ctx.shadowBlur = sel ? 16 : 8;
+
+  } else if (idx === 1) {
+    // TITAN: wide body + swept wings + dual cannons (1.5× scale)
+    ctx.fillStyle = '#1a0800';
+    // Central hull
+    ctx.beginPath();
+    ctx.moveTo(cx,      cy - 21);
+    ctx.lineTo(cx + 12, cy + 18);
+    ctx.lineTo(cx - 12, cy + 18);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    // Left swept wing
+    ctx.beginPath();
+    ctx.moveTo(cx - 9,  cy - 3);
+    ctx.lineTo(cx - 34, cy - 13);
+    ctx.lineTo(cx - 38, cy + 12);
+    ctx.lineTo(cx - 12, cy + 18);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    // Right swept wing
+    ctx.beginPath();
+    ctx.moveTo(cx + 9,  cy - 3);
+    ctx.lineTo(cx + 34, cy - 13);
+    ctx.lineTo(cx + 38, cy + 12);
+    ctx.lineTo(cx + 12, cy + 18);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    // Dual cannons each side
+    ctx.fillStyle = color; ctx.shadowBlur = 8; ctx.shadowColor = color;
+    ctx.fillRect(cx - 42, cy - 4, 5, 20); // outer left
+    ctx.fillRect(cx - 36, cy,     4, 16); // inner left
+    ctx.fillRect(cx + 37, cy - 4, 5, 20); // outer right
+    ctx.fillRect(cx + 32, cy,     4, 16); // inner right
+
+  } else {
+    // PHANTOM: delta flying-wing stealth (1.5× scale)
+    ctx.fillStyle = '#0a0015';
+    ctx.beginPath();
+    ctx.moveTo(cx,      cy - 24);
+    ctx.lineTo(cx + 30, cy + 12);
+    ctx.lineTo(cx + 18, cy + 21);
+    ctx.lineTo(cx,      cy + 12);
+    ctx.lineTo(cx - 18, cy + 21);
+    ctx.lineTo(cx - 30, cy + 12);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    // Stealth panel lines
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(cx, cy - 24); ctx.lineTo(cx + 30, cy + 12); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx, cy - 24); ctx.lineTo(cx - 30, cy + 12); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx - 18, cy + 5); ctx.lineTo(cx + 18, cy + 5); ctx.stroke();
+  }
+  ctx.shadowBlur = 0;
+}
+
+function drawShipSelect() {
+  // Dark overlay on the scrolling starfield
+  ctx.fillStyle = 'rgba(0,4,8,0.88)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Title
+  ctx.textAlign = 'center';
+  ctx.font      = 'bold 20px "Orbitron", monospace';
+  ctx.shadowBlur = 22; ctx.shadowColor = '#00ffcc';
+  ctx.fillStyle  = '#ffffff';
+  ctx.fillText('SELECT YOUR SHIP', W / 2, 52);
+  ctx.shadowBlur = 0;
+
+  const cardW = 128, cardH = 215;
+
+  for (let i = 0; i < 3; i++) {
+    const ship  = SHIPS[i];
+    const b     = getCardBounds(i);
+    const cx    = b.x + cardW / 2;
+    const sel   = i === selectedShip;
+    const pulse = sel ? (0.7 + Math.sin(t * 5) * 0.3) : 0;
+
+    // Card background
+    ctx.fillStyle   = sel ? `rgba(${ship.rgb},0.10)` : 'rgba(8,12,20,0.9)';
+    ctx.strokeStyle = sel ? ship.color : ship.color + '44';
+    ctx.lineWidth   = sel ? 2 : 1;
+    ctx.shadowBlur  = sel ? 16 * pulse : 4;
+    ctx.shadowColor = ship.color;
+    ctx.fillRect(b.x, b.y, cardW, cardH);
+    ctx.strokeRect(b.x, b.y, cardW, cardH);
+    ctx.shadowBlur  = 0;
+
+    // Selection flash (briefly brightens on switch)
+    const flash = Math.max(0, 1 - (t - shipSelectFlash) / 0.3);
+    if (sel && flash > 0) {
+      ctx.fillStyle = `rgba(${ship.rgb},${(flash * 0.28).toFixed(3)})`;
+      ctx.fillRect(b.x, b.y, cardW, cardH);
+    }
+
+    // Selection arrow above card
+    if (sel) {
+      ctx.fillStyle  = ship.color;
+      ctx.shadowBlur = 10; ctx.shadowColor = ship.color;
+      ctx.font = '12px "Share Tech Mono", monospace';
+      ctx.fillText('▼', cx, b.y - 8);
+      ctx.shadowBlur = 0;
+    }
+
+    // Ship preview
+    drawShipPreview(i, cx, b.y + 75, ship.color, sel);
+
+    // Ship name
+    ctx.font      = `bold ${sel ? 13 : 11}px "Orbitron", monospace`;
+    ctx.fillStyle = sel ? ship.color : ship.color + '99';
+    ctx.shadowBlur  = sel ? 10 : 0;
+    ctx.shadowColor = ship.color;
+    ctx.fillText(ship.name, cx, b.y + 140);
+    ctx.shadowBlur = 0;
+
+    // Subtitle
+    ctx.font      = '9px "Share Tech Mono", monospace';
+    ctx.fillStyle = sel ? '#ffffffaa' : '#ffffff44';
+    ctx.fillText(ship.sub, cx, b.y + 155);
+
+    // Stat bars: SPD / FIR / ARM
+    const statLabels = ['SPD', 'FIR', 'ARM'];
+    const bX = b.x + 8, bMaxW = 88;
+    for (let si = 0; si < 3; si++) {
+      const sy  = b.y + 167 + si * 15;
+      const pct = ship.stats[si];
+      // Label
+      ctx.textAlign = 'left';
+      ctx.font      = '7px "Share Tech Mono", monospace';
+      ctx.fillStyle = sel ? ship.color + 'bb' : '#ffffff33';
+      ctx.fillText(statLabels[si], bX, sy + 5);
+      // Track
+      ctx.fillStyle = '#ffffff0c';
+      ctx.fillRect(bX + 22, sy, bMaxW, 5);
+      // Filled bar
+      ctx.shadowBlur  = sel ? 5 : 0;
+      ctx.shadowColor = ship.color;
+      ctx.fillStyle   = sel ? ship.color : ship.color + '55';
+      ctx.fillRect(bX + 22, sy, bMaxW * pct, 5);
+      ctx.shadowBlur  = 0;
+    }
+    ctx.textAlign = 'center';
+  }
+
+  // Navigation hints
+  ctx.font      = '9px "Share Tech Mono", monospace';
+  ctx.fillStyle = '#00ffcc55';
+  ctx.fillText('← → TO NAVIGATE     SPACE / ENTER TO CONFIRM', W / 2, H - 22);
+  ctx.fillStyle = '#00ffcc22';
+  ctx.fillText('CLICK SHIP TO SELECT  ·  CLICK AGAIN TO CONFIRM', W / 2, H - 9);
+  ctx.textAlign  = 'left';
+  ctx.shadowBlur = 0;
+}
+
+// --- Per-ship hull drawing ---
+function drawHullViper(x, y, col) {
+  ctx.shadowBlur = 12; ctx.shadowColor = col;
+  ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.fillStyle = '#001a14';
+  ctx.beginPath();
+  ctx.moveTo(x,      y - 16);
+  ctx.lineTo(x + 12, y + 14);
+  ctx.lineTo(x + 5,  y + 8);
+  ctx.lineTo(x - 5,  y + 8);
+  ctx.lineTo(x - 12, y + 14);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  // Cockpit
+  ctx.fillStyle = col + '55'; ctx.shadowBlur = 4;
+  ctx.fillRect(x - 2.5, y - 12, 5, 8);
+  ctx.shadowBlur = 0;
+}
+
+function drawHullTitan(x, y, col) {
+  ctx.shadowBlur = 14; ctx.shadowColor = col;
+  ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.fillStyle = '#1a0800';
+  // Central body
+  ctx.beginPath();
+  ctx.moveTo(x,     y - 14);
+  ctx.lineTo(x + 8, y + 12);
+  ctx.lineTo(x - 8, y + 12);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  // Left swept wing
+  ctx.beginPath();
+  ctx.moveTo(x - 6,  y - 2);
+  ctx.lineTo(x - 22, y - 8);
+  ctx.lineTo(x - 26, y + 8);
+  ctx.lineTo(x - 8,  y + 12);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  // Right swept wing
+  ctx.beginPath();
+  ctx.moveTo(x + 6,  y - 2);
+  ctx.lineTo(x + 22, y - 8);
+  ctx.lineTo(x + 26, y + 8);
+  ctx.lineTo(x + 8,  y + 12);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  // Dual cannons each side
+  ctx.fillStyle = col; ctx.shadowBlur = 6; ctx.shadowColor = col;
+  ctx.fillRect(x - 29, y,     3, 14); // outer left
+  ctx.fillRect(x - 25, y + 2, 3, 12); // inner left
+  ctx.fillRect(x + 26, y,     3, 14); // outer right
+  ctx.fillRect(x + 22, y + 2, 3, 12); // inner right
+  ctx.shadowBlur = 0;
+}
+
+function drawHullPhantom(x, y, col) {
+  ctx.shadowBlur = 12; ctx.shadowColor = col;
+  ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.fillStyle = '#0a0015';
+  // Delta flying wing
+  ctx.beginPath();
+  ctx.moveTo(x,      y - 16);
+  ctx.lineTo(x + 20, y + 8);
+  ctx.lineTo(x + 12, y + 14);
+  ctx.lineTo(x,      y + 8);
+  ctx.lineTo(x - 12, y + 14);
+  ctx.lineTo(x - 20, y + 8);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  // Stealth panel lines
+  ctx.lineWidth = 0.8;
+  ctx.beginPath(); ctx.moveTo(x, y - 16); ctx.lineTo(x + 20, y + 8); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x, y - 16); ctx.lineTo(x - 20, y + 8); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x - 12, y + 4); ctx.lineTo(x + 12, y + 4); ctx.stroke();
+  ctx.shadowBlur = 0;
 }
 
 // --- Draw helpers ---
@@ -251,29 +554,42 @@ function drawPlayer(p) {
   // Flicker only in the final 40 frames of invincibility
   if (p.invincible > 0 && p.invincible < 40 && Math.floor(p.invincible / 4) % 2) return;
   const x = p.x, y = p.y;
+  const col = SHIPS[selectedShip].color;
 
   // --- Animated engine flame (drawn first so hull overlaps it) ---
   const fl1 = 0.7 + Math.sin(t * 28) * 0.3;
   const fl2 = 0.8 + Math.cos(t * 22) * 0.2;
-  ctx.shadowBlur = 14; ctx.shadowColor = '#ff3300'; ctx.fillStyle = '#ff3300';
-  ctx.beginPath(); ctx.ellipse(x, y + 15, 5 * fl1, 9 * fl1, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.shadowColor = '#ff8800'; ctx.fillStyle = '#ff8800';
-  ctx.beginPath(); ctx.ellipse(x, y + 13, 3.5 * fl2, 6 * fl2, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.shadowBlur = 8; ctx.shadowColor = '#ffff99'; ctx.fillStyle = '#ffff99';
-  ctx.beginPath(); ctx.ellipse(x, y + 12, 1.5, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+
+  if (selectedShip === 1) {
+    // TITAN: twin wing engines
+    for (const ex of [x - 9, x + 9]) {
+      ctx.shadowBlur = 12; ctx.shadowColor = '#ff3300'; ctx.fillStyle = '#ff3300';
+      ctx.beginPath(); ctx.ellipse(ex, y + 14, 4 * fl1, 7 * fl1, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowColor = '#ff8800'; ctx.fillStyle = '#ff8800';
+      ctx.beginPath(); ctx.ellipse(ex, y + 12, 2.5 * fl2, 4.5 * fl2, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowBlur = 6; ctx.shadowColor = '#ffff99'; ctx.fillStyle = '#ffff99';
+      ctx.beginPath(); ctx.ellipse(ex, y + 11, 1.2, 2.5, 0, 0, Math.PI * 2); ctx.fill();
+    }
+  } else if (selectedShip === 2) {
+    // PHANTOM: wide flat exhaust glow
+    ctx.shadowBlur = 12; ctx.shadowColor = col; ctx.fillStyle = col + '66';
+    ctx.beginPath(); ctx.ellipse(x, y + 12, 11 * fl2, 4 * fl1, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowColor = '#ffffff88'; ctx.fillStyle = '#ffffff44';
+    ctx.beginPath(); ctx.ellipse(x, y + 11, 6 * fl2, 1.8, 0, 0, Math.PI * 2); ctx.fill();
+  } else {
+    // VIPER: single centered flame
+    ctx.shadowBlur = 14; ctx.shadowColor = '#ff3300'; ctx.fillStyle = '#ff3300';
+    ctx.beginPath(); ctx.ellipse(x, y + 15, 5 * fl1, 9 * fl1, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowColor = '#ff8800'; ctx.fillStyle = '#ff8800';
+    ctx.beginPath(); ctx.ellipse(x, y + 13, 3.5 * fl2, 6 * fl2, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 8; ctx.shadowColor = '#ffff99'; ctx.fillStyle = '#ffff99';
+    ctx.beginPath(); ctx.ellipse(x, y + 12, 1.5, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+  }
 
   // --- Ship hull ---
-  ctx.shadowBlur = 12; ctx.shadowColor = '#00ffcc';
-  ctx.strokeStyle = '#00ffcc'; ctx.lineWidth = 1.5; ctx.fillStyle = '#001a14';
-  ctx.beginPath();
-  ctx.moveTo(x, y - 16);
-  ctx.lineTo(x + 12, y + 14);
-  ctx.lineTo(x + 5,  y + 8);
-  ctx.lineTo(x - 5,  y + 8);
-  ctx.lineTo(x - 12, y + 14);
-  ctx.closePath();
-  ctx.fill(); ctx.stroke();
-  ctx.shadowBlur = 0;
+  if      (selectedShip === 0) drawHullViper(x, y, col);
+  else if (selectedShip === 1) drawHullTitan(x, y, col);
+  else                         drawHullPhantom(x, y, col);
 
   // --- Hex shield when invincible ---
   if (p.invincible > 0) {
@@ -422,7 +738,7 @@ function drawPickups() {
 }
 
 function drawPlayerBullets() {
-  const baseColor = activeWeapon && weaponColors[activeWeapon] ? weaponColors[activeWeapon] : '#00ffcc';
+  const baseColor = activeWeapon && weaponColors[activeWeapon] ? weaponColors[activeWeapon] : SHIPS[selectedShip].color;
   for (const b of bullets) {
     const color = baseColor;
 
@@ -454,6 +770,9 @@ function drawPlayerBullets() {
       ctx.stroke();
     } else if (b.pierce) {
       ctx.fillRect(b.x - 3, b.y - 12, 6, 20);
+    } else if (b.spd) {
+      // PHANTOM fast bolt: thin and elongated
+      ctx.fillRect(b.x - 1, b.y - 10, 2, 16);
     } else {
       ctx.fillRect(b.x - 1.5, b.y - 6, 3, 12);
     }
@@ -528,7 +847,15 @@ function fireBullet() {
   } else if (activeWeapon === 'bomb') {
     bullets.push({ x: bx, y: by, isBomb: true });
     activeWeapon = null; weaponTimer = 0;
+  } else if (selectedShip === 1) {
+    // TITAN: dual wing cannons
+    bullets.push({ x: bx - 22, y: by + 4 });
+    bullets.push({ x: bx + 22, y: by + 4 });
+  } else if (selectedShip === 2) {
+    // PHANTOM: single fast bolt
+    bullets.push({ x: bx, y: by, spd: 12 });
   } else {
+    // VIPER: single centered
     bullets.push({ x: bx, y: by });
   }
 }
@@ -575,6 +902,7 @@ function loop(ts) {
 
   if (state === 'playing') update(dt);
   if (state === 'playing' || state === 'dead') drawGame(dt);
+  if (state === 'shipSelect') drawShipSelect();
 
   requestAnimationFrame(loop);
 }
@@ -598,7 +926,7 @@ function update(dt) {
   if (shootCooldown > 0) shootCooldown -= dt;
   if ((keys[' '] || keys['z']) && shootCooldown <= 0) {
     fireBullet();
-    shootCooldown = activeWeapon === 'rapid' ? 5 : 12;
+    shootCooldown = activeWeapon === 'rapid' ? 5 : SHIPS[selectedShip].cooldown;
   }
 
   // Weapon timer countdown (−1 = bomb, never expires until used)
@@ -607,9 +935,9 @@ function update(dt) {
     if (weaponTimer <= 0) { activeWeapon = null; weaponTimer = 0; }
   }
 
-  // Move bullets (vx for spread diagonals)
+  // Move bullets (vx for spread diagonals, spd for PHANTOM fast bolts)
   for (const b of bullets) {
-    b.y -= 8 * dt;
+    b.y -= (b.spd || 8) * dt;
     if (b.vx) b.x += b.vx * dt;
   }
   bullets = bullets.filter(b => b.y > -10 && b.x > -30 && b.x < W + 30);
@@ -781,7 +1109,7 @@ function loseLife() {
     state = 'dead';
     setTimeout(() => showOverlay('GAME OVER', `SCORE: ${score}`), 400);
   } else {
-    player.invincible = 120;
+    player.invincible = SHIPS[selectedShip].invincible;
   }
 }
 
@@ -889,6 +1217,27 @@ function drawBoss(b) {
   ctx.textAlign = 'center'; ctx.fillText('BOSS', x, barY - 4); ctx.textAlign = 'left';
 }
 
+function drawShipHUD() {
+  const ship = SHIPS[selectedShip];
+  const bw = 102, bh = 28;
+  const bx = W - 6 - bw, by = H - 6 - bh;
+  ctx.fillStyle   = 'rgba(0,0,0,0.78)';
+  ctx.fillRect(bx, by, bw, bh);
+  ctx.strokeStyle = ship.color;
+  ctx.lineWidth   = 1;
+  ctx.shadowBlur  = 8; ctx.shadowColor = ship.color;
+  ctx.strokeRect(bx, by, bw, bh);
+  ctx.shadowBlur  = 0;
+  ctx.fillStyle   = ship.color;
+  ctx.font        = 'bold 10px "Share Tech Mono", monospace';
+  ctx.textAlign   = 'right';
+  ctx.fillText(ship.name, bx + bw - 6, by + 12);
+  ctx.fillStyle   = ship.color + '88';
+  ctx.font        = '8px "Share Tech Mono", monospace';
+  ctx.fillText(ship.sub, bx + bw - 6, by + 23);
+  ctx.textAlign   = 'left';
+}
+
 function drawGame(dt) {
   drawPickups();
   drawPlayer(player);
@@ -898,6 +1247,7 @@ function drawGame(dt) {
   for (const b of enemyBullets) drawBullet(b, '#ff4444', '#ff4444');
   drawParticles();
   drawWeaponHUD();
+  drawShipHUD();
 
   if (waveDelay > 0) drawTransition();
 
@@ -909,8 +1259,14 @@ function drawGame(dt) {
 // --- Input ---
 window.addEventListener('keydown', e => {
   keys[e.key] = true;
-  if ((e.key === ' ' || e.key === 'Enter') && state !== 'playing') {
-    startGame();
+  if (state === 'menu') {
+    if (e.key === ' ' || e.key === 'Enter') enterShipSelect();
+  } else if (state === 'shipSelect') {
+    if (e.key === 'ArrowLeft'  || e.key === 'a') { selectedShip = (selectedShip + 2) % 3; shipSelectFlash = t; }
+    if (e.key === 'ArrowRight' || e.key === 'd') { selectedShip = (selectedShip + 1) % 3; shipSelectFlash = t; }
+    if (e.key === ' ' || e.key === 'Enter') startGame();
+  } else if (state === 'dead' || state === 'win') {
+    if (e.key === ' ' || e.key === 'Enter') enterShipSelect();
   }
   if (e.key === ' ') e.preventDefault();
 });
@@ -919,7 +1275,20 @@ window.addEventListener('keyup', e => keys[e.key] = false);
 // Touch — relative drag so ship follows finger delta, not finger position
 canvas.addEventListener('touchstart', e => {
   e.preventDefault();
-  if (state !== 'playing') { startGame(); return; }
+  if (state === 'menu' || state === 'dead' || state === 'win') { enterShipSelect(); return; }
+  if (state === 'shipSelect') {
+    const rect = canvas.getBoundingClientRect();
+    const tapX = (e.touches[0].clientX - rect.left) * (W / rect.width);
+    const tapY = (e.touches[0].clientY - rect.top)  * (H / rect.height);
+    for (let i = 0; i < 3; i++) {
+      const b = getCardBounds(i);
+      if (tapX >= b.x && tapX <= b.x + b.w && tapY >= b.y && tapY <= b.y + b.h) {
+        if (i === selectedShip) startGame(); else { selectedShip = i; shipSelectFlash = t; }
+        return;
+      }
+    }
+    return;
+  }
   touchStartClientX = e.touches[0].clientX;
   touchStartPlayerX = player.x;
   keys[' '] = true;
@@ -954,7 +1323,20 @@ canvas.addEventListener('mouseleave', () => {
 });
 
 canvas.addEventListener('mousedown', e => {
-  if (state !== 'playing') { startGame(); return; }
+  if (state === 'menu' || state === 'dead' || state === 'win') { enterShipSelect(); return; }
+  if (state === 'shipSelect') {
+    const rect = canvas.getBoundingClientRect();
+    const mx   = (e.clientX - rect.left) * (W / rect.width);
+    const my   = (e.clientY - rect.top)  * (H / rect.height);
+    for (let i = 0; i < 3; i++) {
+      const b = getCardBounds(i);
+      if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) {
+        if (i === selectedShip) startGame(); else { selectedShip = i; shipSelectFlash = t; }
+        return;
+      }
+    }
+    return;
+  }
   keys[' '] = true;
 });
 
@@ -966,18 +1348,30 @@ const NATURAL_W = 480, NATURAL_H = 634;
 
 function scaleGame() {
   const wrapper = document.getElementById('gameWrapper');
-  const scaleX  = (window.innerWidth  * 0.96) / NATURAL_W;
-  const scaleY  = (window.innerHeight * 0.96) / NATURAL_H;
-  const scale   = Math.min(scaleX, scaleY, 2.0);
-  // Position top-left corner so the scaled block is centered in the viewport
-  const left    = (window.innerWidth  - NATURAL_W * scale) / 2;
-  const top     = (window.innerHeight - NATURAL_H * scale) / 2;
+  // visualViewport gives the true visible area on mobile (excludes browser
+  // toolbars, on-screen keyboard, notch insets). Falls back to clientWidth/Height
+  // which is more reliable than window.innerWidth/Height on most mobile browsers.
+  const vp  = window.visualViewport;
+  const vw  = vp ? vp.width  : (document.documentElement.clientWidth  || window.innerWidth);
+  const vh  = vp ? vp.height : (document.documentElement.clientHeight || window.innerHeight);
+  const scale = Math.min(vw * 0.96 / NATURAL_W, vh * 0.96 / NATURAL_H, 2.0);
+  // Center the scaled wrapper inside the visual viewport.
+  // Because #gameWrapper is position:fixed, left/top are relative to the
+  // visual viewport directly — no body-height mismatch.
+  const left = (vw - NATURAL_W * scale) / 2;
+  const top  = (vh - NATURAL_H * scale) / 2;
   wrapper.style.left      = left + 'px';
   wrapper.style.top       = top  + 'px';
   wrapper.style.transform = `scale(${scale})`;
 }
 window.addEventListener('resize', scaleGame);
 window.addEventListener('orientationchange', () => setTimeout(scaleGame, 150));
+// visualViewport fires its own resize/scroll when the keyboard or toolbar
+// appears/disappears — the window resize event is NOT reliable for this.
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', scaleGame);
+  window.visualViewport.addEventListener('scroll', scaleGame);
+}
 
 // --- Init ---
 initStars();
